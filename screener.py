@@ -132,6 +132,11 @@ def calculate_technical_indicators(price_df: pd.DataFrame) -> pd.DataFrame:
     # True : 現在 MA5 > MA25（上昇トレンド）
     df["ma5_above_ma25"] = df["MA5"] > df["MA25"]
 
+    # --- RSI / MACD ---
+    df["rsi"] = _calc_rsi(df["Close"], period=14)
+    df["macd"], df["macd_signal"] = _calc_macd(df["Close"])
+    df["macd_hist"] = df["macd"] - df["macd_signal"]
+
     return df
 
 
@@ -160,6 +165,15 @@ def get_latest_signal(price_df: pd.DataFrame) -> dict:
     gc_dates = df[df["golden_cross"]].index
     dc_dates = df[df["dead_cross"]].index
 
+    macd_cross = None
+    if pd.notna(latest.get("macd")) and pd.notna(latest.get("macd_signal")):
+        prev = df.iloc[-2] if len(df) >= 2 else None
+        if prev is not None and pd.notna(prev.get("macd")) and pd.notna(prev.get("macd_signal")):
+            if latest["macd"] > latest["macd_signal"] and prev["macd"] <= prev["macd_signal"]:
+                macd_cross = "ゴールデン"
+            elif latest["macd"] < latest["macd_signal"] and prev["macd"] >= prev["macd_signal"]:
+                macd_cross = "デッド"
+
     return {
         "golden_cross_date": gc_dates[-1].date() if len(gc_dates) > 0 else None,
         "dead_cross_date"  : dc_dates[-1].date() if len(dc_dates) > 0 else None,
@@ -167,6 +181,8 @@ def get_latest_signal(price_df: pd.DataFrame) -> dict:
         "ma5"              : latest.get("MA5"),
         "ma25"             : latest.get("MA25"),
         "ma75"             : latest.get("MA75"),
+        "rsi"              : latest.get("rsi"),
+        "macd_cross"       : macd_cross,
     }
 
 
