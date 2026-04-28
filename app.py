@@ -272,6 +272,8 @@ with tab_detail:
     with col_vol:
         show_volume = st.checkbox("出来高を表示", value=True)
         show_cross  = st.checkbox("クロスシグナルを表示", value=True)
+        show_rsi    = st.checkbox("RSI（14日）を表示", value=True)
+        show_macd   = st.checkbox("MACDを表示", value=True)
 
     # 株価履歴取得（キャッシュ）
     @st.cache_data(ttl=300)
@@ -288,24 +290,45 @@ with tab_detail:
         signal  = get_latest_signal(price_df)
 
         # シグナルサマリー
-        s_col1, s_col2, s_col3, s_col4 = st.columns(4)
-        s_col1.metric("トレンド",        signal.get("trend", "-"))
-        s_col2.metric("MA5",             f"¥{signal['ma5']:,.0f}"  if signal.get("ma5")  else "-")
-        s_col3.metric("MA25",            f"¥{signal['ma25']:,.0f}" if signal.get("ma25") else "-")
+        s_col1, s_col2, s_col3, s_col4, s_col5, s_col6 = st.columns(6)
+        s_col1.metric("トレンド",   signal.get("trend", "-"))
+        s_col2.metric("MA5",        f"¥{signal['ma5']:,.0f}"  if signal.get("ma5")  else "-")
+        s_col3.metric("MA25",       f"¥{signal['ma25']:,.0f}" if signal.get("ma25") else "-")
         gc_date = signal.get("golden_cross_date")
         dc_date = signal.get("dead_cross_date")
         s_col4.metric(
-            "直近クロス",
+            "直近MAクロス",
             f"GC: {gc_date}" if gc_date else "GC: なし",
             delta=f"DC: {dc_date}" if dc_date else "DC: なし",
             delta_color="off",
         )
+        rsi_val = signal.get("rsi")
+        rsi_label = (
+            "⚠ 買われすぎ" if rsi_val and rsi_val >= 70
+            else "⚠ 売られすぎ" if rsi_val and rsi_val <= 30
+            else ""
+        )
+        s_col5.metric("RSI(14)", f"{rsi_val:.1f}" if rsi_val else "-", delta=rsi_label or None, delta_color="off")
+        macd_cross = signal.get("macd_cross")
+        s_col6.metric("MACDクロス", macd_cross if macd_cross else "-")
 
         # ============================================================
         # Plotly チャート描画
         # ============================================================
-        rows = 2 if show_volume else 1
-        row_heights = [0.7, 0.3] if show_volume else [1.0]
+        panel_weights = [0.5]
+        if show_volume: panel_weights.append(0.15)
+        if show_rsi:    panel_weights.append(0.175)
+        if show_macd:   panel_weights.append(0.175)
+        total_w = sum(panel_weights)
+        row_heights = [w / total_w for w in panel_weights]
+        rows = len(row_heights)
+
+        _row = 2
+        vol_row = _row if show_volume else None
+        if show_volume: _row += 1
+        rsi_row = _row if show_rsi else None
+        if show_rsi: _row += 1
+        macd_row = _row if show_macd else None
 
         fig = make_subplots(
             rows=rows, cols=1,
@@ -382,8 +405,50 @@ with tab_detail:
                     x=tech_df.index, y=tech_df["Volume"],
                     name="出来高", marker_color=colors, opacity=0.6,
                 ),
-                row=2, col=1,
+                row=vol_row, col=1,
             )
+
+        # RSI
+        if show_rsi and "rsi" in tech_df.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=tech_df.index, y=tech_df["rsi"],
+                    name="RSI(14)", line=dict(color="#a78bfa", width=1.5),
+                ),
+                row=rsi_row, col=1,
+            )
+            for level, color in [(70, "rgba(255,77,109,0.4)"), (30, "rgba(0,255,136,0.4)")]:
+                fig.add_hline(y=level, line_dash="dash", line_color=color, row=rsi_row, col=1)
+            fig.update_yaxes(title_text="RSI", range=[0, 100], row=rsi_row, col=1)
+
+        # MACD
+        if show_macd and "macd" in tech_df.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=tech_df.index, y=tech_df["macd"],
+                    name="MACD", line=dict(color="#4a9eff", width=1.5),
+                ),
+                row=macd_row, col=1,
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=tech_df.index, y=tech_df["macd_signal"],
+                    name="シグナル", line=dict(color="#ffd700", width=1.5),
+                ),
+                row=macd_row, col=1,
+            )
+            hist_colors = [
+                "#00ff88" if v >= 0 else "#ff4d6d"
+                for v in tech_df["macd_hist"].fillna(0)
+            ]
+            fig.add_trace(
+                go.Bar(
+                    x=tech_df.index, y=tech_df["macd_hist"],
+                    name="ヒストグラム", marker_color=hist_colors, opacity=0.6,
+                ),
+                row=macd_row, col=1,
+            )
+            fig.update_yaxes(title_text="MACD", row=macd_row, col=1)
 
         fig.update_layout(
             template="plotly_dark",
