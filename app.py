@@ -28,6 +28,7 @@ from fetcher import (
 )
 # ※ DEFAULT_TICKERS は JPX CSV取得方式に移行したため削除済み
 from screener import apply_all_screens, calculate_technical_indicators, get_latest_signal
+from signal_filter import find_recent_gc_stocks
 
 # ============================================================
 # ページ設定
@@ -118,6 +119,8 @@ with st.sidebar:
 # ============================================================
 if "raw_df" not in st.session_state:
     st.session_state.raw_df = pd.DataFrame()
+if "gc_result" not in st.session_state:
+    st.session_state.gc_result = pd.DataFrame()
 
 if fetch_button:
     tickers = filter_tickers_by_criteria(
@@ -183,7 +186,7 @@ st.divider()
 # ============================================================
 # タブ構成
 # ============================================================
-tab_screen, tab_detail = st.tabs(["📋 スクリーニング結果", "🔍 銘柄詳細（チャート）"])
+tab_screen, tab_gc, tab_detail = st.tabs(["📋 スクリーニング結果", "🚀 直近GC銘柄", "🔍 銘柄詳細（チャート）"])
 
 # -------- Tab1: スクリーニング結果テーブル --------
 with tab_screen:
@@ -239,7 +242,70 @@ with tab_screen:
         height=500,
     )
 
-# -------- Tab2: 銘柄詳細（チャート + テクニカル） --------
+# -------- Tab2: 直近GC銘柄 --------
+with tab_gc:
+    st.subheader("🚀 直近ゴールデンクロス銘柄スキャン")
+
+    gc_base = df[df["is_undervalued"] | df["is_high_dividend"]].copy()
+
+    st.info(
+        f"ファンダメンタル条件（PER / 配当）を通過した **{len(gc_base)} 銘柄** を対象にGCスキャンします。"
+        "　※スクリーニングを先に実行してください。"
+    )
+
+    gc_days = st.slider("GC発生を遡る日数", min_value=3, max_value=30, value=7, step=1)
+    gc_scan_button = st.button("🔍 GCスキャン開始", type="primary", use_container_width=False)
+
+    if gc_scan_button and not gc_base.empty:
+        # キャッシュキーが変わる可能性があるのでリセット
+        st.session_state.gc_result = pd.DataFrame()
+
+        gc_progress_bar = st.progress(0)
+        gc_status_text  = st.empty()
+
+        def update_gc_progress(current, total, code):
+            gc_progress_bar.progress(current / total)
+            gc_status_text.text(f"GCスキャン中... {current}/{total}  ({code})")
+
+        gc_found = find_recent_gc_stocks(gc_base, days=gc_days, progress_callback=update_gc_progress)
+        gc_progress_bar.empty()
+        gc_status_text.empty()
+        st.session_state.gc_result = gc_found
+
+    gc_result = st.session_state.gc_result
+
+    if gc_result is not None and not gc_result.empty:
+        st.success(f"✅ {len(gc_result)} 銘柄で直近 {gc_days} 日以内のGCを検出")
+
+        gc_show_cols = {
+            "code"          : "コード",
+            "name"          : "銘柄名",
+            "sector"        : "セクター",
+            "price"         : "株価（円）",
+            "per"           : "PER（倍）",
+            "dividend_yield": "配当利回り（%）",
+            "label"         : "タグ",
+            "gc_date"       : "GC発生日",
+            "gc_days_ago"   : "何日前",
+        }
+        available = [c for c in gc_show_cols if c in gc_result.columns]
+        gc_table  = gc_result[available].rename(columns=gc_show_cols)
+
+        st.dataframe(
+            gc_table.style.format({
+                "PER（倍）"       : lambda x: f"{x:.1f}"  if pd.notna(x) else "-",
+                "配当利回り（%）" : lambda x: f"{x:.2f}%" if pd.notna(x) else "-",
+                "株価（円）"      : lambda x: f"¥{x:,.0f}" if pd.notna(x) else "-",
+                "何日前"          : lambda x: f"{int(x)}日前" if pd.notna(x) else "-",
+            }),
+            use_container_width=True,
+        )
+    elif gc_scan_button and gc_base.empty:
+        st.warning("スクリーニング結果がありません。先にスクリーニングを実行してください。")
+    else:
+        st.caption("👆 「GCスキャン開始」を押すとスキャンします。")
+
+# -------- Tab3: 銘柄詳細（チャート + テクニカル） --------
 with tab_detail:
     st.subheader("🔍 個別銘柄の株価チャートとテクニカル指標")
 
