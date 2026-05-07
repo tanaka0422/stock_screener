@@ -29,6 +29,7 @@ from fetcher import (
 # ※ DEFAULT_TICKERS は JPX CSV取得方式に移行したため削除済み
 from screener import apply_all_screens, calculate_technical_indicators, get_latest_signal
 from signal_filter import find_recent_gc_stocks
+from watchlist import load_watchlists, add_watchlist, delete_watchlist, list_watchlist_names
 
 # ============================================================
 # ページ設定
@@ -64,20 +65,55 @@ sector33_list = get_sector33_list(jpx_df)
 with st.sidebar:
     st.header("🔧 フィルター設定")
 
+    # --- ⓪ ウォッチリスト読み込み ---
+    wl_names = list_watchlist_names()
+    if wl_names:
+        st.subheader("⓪ ウォッチリスト")
+        selected_wl = st.selectbox(
+            "保存済み条件を読み込む",
+            options=["（選択してください）"] + wl_names,
+        )
+        col_load, col_del = st.columns(2)
+        load_button   = col_load.button("📂 読み込み", use_container_width=True)
+        delete_button = col_del.button("🗑 削除",     use_container_width=True)
+
+        if load_button and selected_wl != "（選択してください）":
+            from watchlist import get_watchlist
+            wl = get_watchlist(selected_wl)
+            if wl:
+                st.session_state["wl_load"] = wl["conditions"]
+                st.rerun()
+
+        if delete_button and selected_wl != "（選択してください）":
+            delete_watchlist(selected_wl)
+            st.success(f"「{selected_wl}」を削除しました")
+            st.rerun()
+
+        st.divider()
+
+    # セッションステートから条件を復元（ウォッチリスト読み込み時）
+    _wl = st.session_state.pop("wl_load", None)
+    _default_sectors   = _wl["sectors"]    if _wl else []
+    _default_max_count = _wl["max_count"]  if _wl else 150
+    _default_per_max   = _wl["per_max"]    if _wl else 15.0
+    _default_yield_min = _wl["yield_min"]  if _wl else 5.0
+    _default_use_pbr   = _wl["use_pbr"]    if _wl else False
+    _default_cap       = _wl["cap_filter"] if _wl else "指定なし"
+
     # --- ① 事前絞り込み（JPX CSV段階・yfinance不要）---
     st.subheader("① 銘柄ユニバース")
 
     selected_sectors = st.multiselect(
         "業種（33業種）",
         options=sector33_list,
-        default=[],
+        default=_default_sectors,
         placeholder="未選択 = 全業種対象",
         help="複数選択可。未選択の場合は全業種が対象（取得件数が増えます）",
     )
 
     max_count = st.slider(
         "最大取得銘柄数",
-        min_value=50, max_value=500, value=150, step=50,
+        min_value=50, max_value=500, value=_default_max_count, step=50,
         help="yfinanceへの負荷を抑えるため上限を設定。業種で絞るほど少なくできます",
     )
 
@@ -88,24 +124,25 @@ with st.sidebar:
 
     per_max = st.slider(
         "PER 上限（割安株）",
-        min_value=5.0, max_value=50.0, value=15.0, step=0.5,
+        min_value=5.0, max_value=50.0, value=_default_per_max, step=0.5,
         help="PER がこの値以下の銘柄を『割安株』として強調表示",
     )
 
     yield_min = st.slider(
         "配当利回り 下限（高配当株）",
-        min_value=1.0, max_value=10.0, value=5.0, step=0.5,
+        min_value=1.0, max_value=10.0, value=_default_yield_min, step=0.5,
         help="配当利回りがこの値(%)以上の銘柄を『高配当株』として強調表示",
     )
 
-    use_pbr = st.checkbox("低PBR フィルターを使用（PBR ≤ 1.0）", value=False)
+    use_pbr = st.checkbox("低PBR フィルターを使用（PBR ≤ 1.0）", value=_default_use_pbr)
     pbr_max = 1.0 if use_pbr else None
 
     # 時価総額フィルター（yfinance取得後に適用）
+    cap_options = ["指定なし"] + list(MARKET_CAP_RANKS.keys())
     cap_filter = st.selectbox(
         "時価総額フィルター",
-        options=["指定なし"] + list(MARKET_CAP_RANKS.keys()),
-        index=0,
+        options=cap_options,
+        index=cap_options.index(_default_cap) if _default_cap in cap_options else 0,
     )
 
     st.divider()
@@ -113,6 +150,28 @@ with st.sidebar:
     # --- ③ 取得ボタン ---
     fetch_button = st.button("🔍 スクリーニング開始", type="primary", use_container_width=True)
     st.caption(f"📋 プライム上場銘柄: {len(jpx_df)} 件")
+
+    st.divider()
+
+    # --- ④ ウォッチリスト保存 ---
+    st.subheader("④ ウォッチリストに保存")
+    wl_name_input = st.text_input("ウォッチリスト名", placeholder="例：高配当・製造業")
+    save_button   = st.button("💾 現在の条件を保存", use_container_width=True)
+
+    if save_button:
+        if not wl_name_input.strip():
+            st.warning("ウォッチリスト名を入力してください")
+        else:
+            add_watchlist(wl_name_input, {
+                "sectors"   : selected_sectors,
+                "max_count" : max_count,
+                "per_max"   : per_max,
+                "yield_min" : yield_min,
+                "use_pbr"   : use_pbr,
+                "pbr_max"   : pbr_max,
+                "cap_filter": cap_filter,
+            })
+            st.success(f"「{wl_name_input.strip()}」を保存しました")
 
 # ============================================================
 # Step2: セッションステートで取得済みデータを保持
