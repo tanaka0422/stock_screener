@@ -5,7 +5,7 @@ signal_filter.py のユニットテスト。
 
 外部API呼び出しはすべてモック：
   - get_price_history → モック価格 DataFrame を返す
-  - pickle / os       → キャッシュをバイパス
+  - db               → SQLite 操作をモック（gc_signals キャッシュ）
 """
 
 import pytest
@@ -69,10 +69,10 @@ class TestFindRecentGcStocks:
 
     def test_returns_dataframe(self, screened_df):
         price_df = _make_price_df(cross_type="golden")
-        with patch("signal_filter.get_price_history", return_value=price_df), \
-             patch("signal_filter.os.path.exists", return_value=False), \
-             patch("builtins.open", MagicMock()), \
-             patch("signal_filter.pickle.dump"):
+        with patch("signal_filter.db.init_db"), \
+             patch("signal_filter.db.load_gc_signals", return_value=None), \
+             patch("signal_filter.db.upsert_gc_signals"), \
+             patch("signal_filter.get_price_history", return_value=price_df):
             result = find_recent_gc_stocks(screened_df, days=30)
         assert isinstance(result, pd.DataFrame)
 
@@ -86,30 +86,30 @@ class TestFindRecentGcStocks:
     def test_detects_recent_gc(self, screened_df):
         """直近30日以内にGCが発生している銘柄を検出する"""
         price_df = _make_price_df(cross_type="golden")
-        with patch("signal_filter.get_price_history", return_value=price_df), \
-             patch("signal_filter.os.path.exists", return_value=False), \
-             patch("builtins.open", MagicMock()), \
-             patch("signal_filter.pickle.dump"):
+        with patch("signal_filter.db.init_db"), \
+             patch("signal_filter.db.load_gc_signals", return_value=None), \
+             patch("signal_filter.db.upsert_gc_signals"), \
+             patch("signal_filter.get_price_history", return_value=price_df):
             result = find_recent_gc_stocks(screened_df, days=30)
         assert not result.empty
 
     def test_excludes_stocks_without_gc(self, screened_df):
         """GCが発生していない銘柄は除外される"""
         flat_df = _make_price_df(cross_type=None)
-        with patch("signal_filter.get_price_history", return_value=flat_df), \
-             patch("signal_filter.os.path.exists", return_value=False), \
-             patch("builtins.open", MagicMock()), \
-             patch("signal_filter.pickle.dump"):
+        with patch("signal_filter.db.init_db"), \
+             patch("signal_filter.db.load_gc_signals", return_value=None), \
+             patch("signal_filter.db.upsert_gc_signals"), \
+             patch("signal_filter.get_price_history", return_value=flat_df):
             result = find_recent_gc_stocks(screened_df, days=7)
         assert result.empty
 
     def test_excludes_stocks_with_only_dead_cross(self, screened_df):
         """DCのみの銘柄は除外される"""
         dc_df = _make_price_df(cross_type="dead")
-        with patch("signal_filter.get_price_history", return_value=dc_df), \
-             patch("signal_filter.os.path.exists", return_value=False), \
-             patch("builtins.open", MagicMock()), \
-             patch("signal_filter.pickle.dump"):
+        with patch("signal_filter.db.init_db"), \
+             patch("signal_filter.db.load_gc_signals", return_value=None), \
+             patch("signal_filter.db.upsert_gc_signals"), \
+             patch("signal_filter.get_price_history", return_value=dc_df):
             result = find_recent_gc_stocks(screened_df, days=7)
         assert result.empty
 
@@ -117,20 +117,20 @@ class TestFindRecentGcStocks:
 
     def test_result_contains_gc_date_column(self, screened_df):
         price_df = _make_price_df(cross_type="golden")
-        with patch("signal_filter.get_price_history", return_value=price_df), \
-             patch("signal_filter.os.path.exists", return_value=False), \
-             patch("builtins.open", MagicMock()), \
-             patch("signal_filter.pickle.dump"):
+        with patch("signal_filter.db.init_db"), \
+             patch("signal_filter.db.load_gc_signals", return_value=None), \
+             patch("signal_filter.db.upsert_gc_signals"), \
+             patch("signal_filter.get_price_history", return_value=price_df):
             result = find_recent_gc_stocks(screened_df, days=30)
         if not result.empty:
             assert "gc_date" in result.columns
 
     def test_result_contains_gc_days_ago_column(self, screened_df):
         price_df = _make_price_df(cross_type="golden")
-        with patch("signal_filter.get_price_history", return_value=price_df), \
-             patch("signal_filter.os.path.exists", return_value=False), \
-             patch("builtins.open", MagicMock()), \
-             patch("signal_filter.pickle.dump"):
+        with patch("signal_filter.db.init_db"), \
+             patch("signal_filter.db.load_gc_signals", return_value=None), \
+             patch("signal_filter.db.upsert_gc_signals"), \
+             patch("signal_filter.get_price_history", return_value=price_df):
             result = find_recent_gc_stocks(screened_df, days=30)
         if not result.empty:
             assert "gc_days_ago" in result.columns
@@ -139,10 +139,10 @@ class TestFindRecentGcStocks:
     def test_result_sorted_by_gc_days_ago(self, screened_df):
         """直近のGCが上に来るよう gc_days_ago 昇順になっている"""
         price_df = _make_price_df(cross_type="golden")
-        with patch("signal_filter.get_price_history", return_value=price_df), \
-             patch("signal_filter.os.path.exists", return_value=False), \
-             patch("builtins.open", MagicMock()), \
-             patch("signal_filter.pickle.dump"):
+        with patch("signal_filter.db.init_db"), \
+             patch("signal_filter.db.load_gc_signals", return_value=None), \
+             patch("signal_filter.db.upsert_gc_signals"), \
+             patch("signal_filter.get_price_history", return_value=price_df):
             result = find_recent_gc_stocks(screened_df, days=30)
         if len(result) > 1:
             assert result["gc_days_ago"].is_monotonic_increasing
@@ -150,10 +150,10 @@ class TestFindRecentGcStocks:
     def test_original_columns_preserved(self, screened_df):
         """元のスクリーニング列が保持されている"""
         price_df = _make_price_df(cross_type="golden")
-        with patch("signal_filter.get_price_history", return_value=price_df), \
-             patch("signal_filter.os.path.exists", return_value=False), \
-             patch("builtins.open", MagicMock()), \
-             patch("signal_filter.pickle.dump"):
+        with patch("signal_filter.db.init_db"), \
+             patch("signal_filter.db.load_gc_signals", return_value=None), \
+             patch("signal_filter.db.upsert_gc_signals"), \
+             patch("signal_filter.get_price_history", return_value=price_df):
             result = find_recent_gc_stocks(screened_df, days=30)
         if not result.empty:
             for col in ["code", "name", "per", "dividend_yield"]:
@@ -163,43 +163,57 @@ class TestFindRecentGcStocks:
 
     def test_skips_ticker_when_price_unavailable(self, screened_df):
         """価格データ取得失敗の銘柄はスキップされ、エラーにならない"""
-        with patch("signal_filter.get_price_history", return_value=None), \
-             patch("signal_filter.os.path.exists", return_value=False), \
-             patch("builtins.open", MagicMock()), \
-             patch("signal_filter.pickle.dump"):
+        with patch("signal_filter.db.init_db"), \
+             patch("signal_filter.db.load_gc_signals", return_value=None), \
+             patch("signal_filter.db.upsert_gc_signals"), \
+             patch("signal_filter.get_price_history", return_value=None):
             result = find_recent_gc_stocks(screened_df, days=7)
         assert isinstance(result, pd.DataFrame)
 
     def test_skips_ticker_when_price_empty(self, screened_df):
         """空 DataFrame が返ってきた銘柄はスキップされる"""
-        with patch("signal_filter.get_price_history", return_value=pd.DataFrame()), \
-             patch("signal_filter.os.path.exists", return_value=False), \
-             patch("builtins.open", MagicMock()), \
-             patch("signal_filter.pickle.dump"):
+        with patch("signal_filter.db.init_db"), \
+             patch("signal_filter.db.load_gc_signals", return_value=None), \
+             patch("signal_filter.db.upsert_gc_signals"), \
+             patch("signal_filter.get_price_history", return_value=pd.DataFrame()):
             result = find_recent_gc_stocks(screened_df, days=7)
         assert result.empty
 
-    # --- キャッシュ ---
+    # --- キャッシュ（SQLite）---
 
-    def test_uses_cache_when_available(self, screened_df):
-        cached = screened_df.copy()
-        cached["gc_date"] = date.today()
-        cached["gc_days_ago"] = 0
-        with patch("signal_filter.os.path.exists", return_value=True), \
-             patch("signal_filter.pickle.load", return_value=cached), \
-             patch("builtins.open", MagicMock()):
+    def test_uses_db_cache_when_available(self, screened_df):
+        """今日の gc_signals キャッシュがあれば yfinance を呼ばない"""
+        cached_signals = pd.DataFrame([
+            {"code": "7203", "gc_date": str(date.today()), "gc_days_ago": 0},
+            {"code": "8306", "gc_date": str(date.today()), "gc_days_ago": 0},
+        ])
+        with patch("signal_filter.db.init_db"), \
+             patch("signal_filter.db.load_gc_signals", return_value=cached_signals), \
+             patch("signal_filter.get_price_history") as mock_hist:
             result = find_recent_gc_stocks(screened_df, days=7)
+        mock_hist.assert_not_called()
         assert len(result) == len(screened_df)
+
+    def test_saves_to_db_after_scan(self, screened_df):
+        """スキャン後に gc_signals テーブルへ保存する"""
+        price_df = _make_price_df(cross_type="golden")
+        with patch("signal_filter.db.init_db"), \
+             patch("signal_filter.db.load_gc_signals", return_value=None), \
+             patch("signal_filter.db.upsert_gc_signals") as mock_upsert, \
+             patch("signal_filter.get_price_history", return_value=price_df):
+            result = find_recent_gc_stocks(screened_df, days=30)
+        if not result.empty:
+            mock_upsert.assert_called_once()
 
     # --- progress_callback ---
 
     def test_calls_progress_callback(self, screened_df):
         calls = []
         flat_df = _make_price_df(cross_type=None)
-        with patch("signal_filter.get_price_history", return_value=flat_df), \
-             patch("signal_filter.os.path.exists", return_value=False), \
-             patch("builtins.open", MagicMock()), \
-             patch("signal_filter.pickle.dump"):
+        with patch("signal_filter.db.init_db"), \
+             patch("signal_filter.db.load_gc_signals", return_value=None), \
+             patch("signal_filter.db.upsert_gc_signals"), \
+             patch("signal_filter.get_price_history", return_value=flat_df):
             find_recent_gc_stocks(
                 screened_df, days=7,
                 progress_callback=lambda c, t, code: calls.append((c, t)),

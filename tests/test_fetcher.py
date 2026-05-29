@@ -6,7 +6,8 @@ fetcher.py のユニットテスト。
 外部API・ネットワーク呼び出しはすべてモック：
   - yf.Ticker       → unittest.mock.MagicMock
   - pd.read_excel   → モック DataFrame を返す
-  - pickle / os     → キャッシュ読み書きをバイパス
+  - pickle / os     → JPX キャッシュのみ引き続き使用
+  - db              → SQLite 操作をモック
 """
 
 import pytest
@@ -66,6 +67,16 @@ def mock_price_df():
         {"Open": close, "High": close + 50, "Low": close - 50, "Close": close, "Volume": 500_000},
         index=dates,
     )
+
+
+def _make_stock_record(code: str) -> dict:
+    return {
+        "code": code, "name": f"株{code}", "sector": "製造業",
+        "price": 1000.0, "per": 12.0, "pbr": 1.0,
+        "dividend_yield": 3.0, "market_cap": 1e12,
+        "52w_high": 1200.0, "52w_low": 800.0,
+        "industry": "製造",
+    }
 
 
 # ============================================================
@@ -209,32 +220,55 @@ class TestGetStockInfo:
 
 class TestGetPriceHistory:
 
-    def test_returns_dataframe(self, mock_price_df):
+    def test_returns_dataframe_from_yfinance(self, mock_price_df):
         mock_ticker = MagicMock()
         mock_ticker.history.return_value = mock_price_df
-        with patch("fetcher.yf.Ticker", return_value=mock_ticker):
+        with patch("fetcher.db.load_price_history", return_value=None), \
+             patch("fetcher.db.upsert_price_history"), \
+             patch("fetcher.yf.Ticker", return_value=mock_ticker):
             result = get_price_history("7203", period="6mo")
         assert isinstance(result, pd.DataFrame)
         assert not result.empty
 
+    def test_returns_cached_from_db(self, mock_price_df):
+        """SQLite にデータがあれば yfinance を呼ばない"""
+        with patch("fetcher.db.load_price_history", return_value=mock_price_df), \
+             patch("fetcher.yf.Ticker") as mock_yf:
+            result = get_price_history("7203")
+        mock_yf.assert_not_called()
+        assert result is mock_price_df
+
     def test_uses_correct_ticker_format(self, mock_price_df):
         mock_ticker = MagicMock()
         mock_ticker.history.return_value = mock_price_df
-        with patch("fetcher.yf.Ticker", return_value=mock_ticker) as mock_yf:
+        with patch("fetcher.db.load_price_history", return_value=None), \
+             patch("fetcher.db.upsert_price_history"), \
+             patch("fetcher.yf.Ticker", return_value=mock_ticker) as mock_yf:
             get_price_history("7203")
         mock_yf.assert_called_once_with("7203.T")
 
     def test_returns_none_on_empty(self):
         mock_ticker = MagicMock()
         mock_ticker.history.return_value = pd.DataFrame()
-        with patch("fetcher.yf.Ticker", return_value=mock_ticker):
+        with patch("fetcher.db.load_price_history", return_value=None), \
+             patch("fetcher.yf.Ticker", return_value=mock_ticker):
             result = get_price_history("7203")
         assert result is None
 
     def test_returns_none_on_exception(self):
-        with patch("fetcher.yf.Ticker", side_effect=Exception("network error")):
+        with patch("fetcher.db.load_price_history", return_value=None), \
+             patch("fetcher.yf.Ticker", side_effect=Exception("network error")):
             result = get_price_history("7203")
         assert result is None
+
+    def test_saves_to_db_after_fetch(self, mock_price_df):
+        mock_ticker = MagicMock()
+        mock_ticker.history.return_value = mock_price_df
+        with patch("fetcher.db.load_price_history", return_value=None), \
+             patch("fetcher.db.upsert_price_history") as mock_upsert, \
+             patch("fetcher.yf.Ticker", return_value=mock_ticker):
+            get_price_history("7203")
+        mock_upsert.assert_called_once()
 
 
 # ============================================================
@@ -243,70 +277,82 @@ class TestGetPriceHistory:
 
 class TestGetAllStocks:
 
-    def test_returns_dataframe_from_multiple_tickers(self):
-        def mock_get_info(code):
-            return {"code": code, "name": f"株{code}", "sector": "製造業",
-                    "price": 1000.0, "per": 12.0, "pbr": 1.0,
-                    "dividend_yield": 3.0, "market_cap": 1e12,
-                    "52w_high": 1200.0, "52w_low": 800.0}
-
-        with patch("fetcher.os.path.exists", return_value=False), \
-             patch("fetcher.get_stock_info", side_effect=mock_get_info), \
-             patch("builtins.open", MagicMock()), \
-             patch("fetcher.pickle.dump"), \
+    def test_returns_dataframe_from_yfinance(self):
+        with patch("fetcher.db.init_db"), \
+             patch("fetcher.db.load_latest_stocks", return_value=pd.DataFrame()), \
+             patch("fetcher.db.upsert_stocks"), \
+             patch("fetcher.get_stock_info", side_effect=_make_stock_record), \
              patch("fetcher.time.sleep"):
             result = get_all_stocks(["7203", "9984"], sleep_sec=0)
-
         assert len(result) == 2
         assert set(result["code"]) == {"7203", "9984"}
+
+    def test_returns_from_db_when_available(self):
+        """SQLite に今日のデータがあればそれを返す"""
+        cached_df = pd.DataFrame([
+            _make_stock_record("7203"),
+            _make_stock_record("9984"),
+        ])
+        with patch("fetcher.db.init_db"), \
+             patch("fetcher.db.load_latest_stocks", return_value=cached_df), \
+             patch("fetcher.get_stock_info") as mock_info:
+            result = get_all_stocks(["7203", "9984"])
+        mock_info.assert_not_called()
+        assert set(result["code"]) == {"7203", "9984"}
+
+    def test_filters_db_by_requested_tickers(self):
+        """DBに多くの銘柄があっても、要求した銘柄だけ返す"""
+        cached_df = pd.DataFrame([
+            _make_stock_record("7203"),
+            _make_stock_record("9984"),
+            _make_stock_record("6758"),
+        ])
+        with patch("fetcher.db.init_db"), \
+             patch("fetcher.db.load_latest_stocks", return_value=cached_df):
+            result = get_all_stocks(["7203"])
+        assert list(result["code"]) == ["7203"]
 
     def test_skips_failed_tickers(self):
         def mock_get_info(code):
             if code == "9999":
                 return None
-            return {"code": code, "name": f"株{code}", "sector": "製造業",
-                    "price": 1000.0, "per": 12.0, "pbr": 1.0,
-                    "dividend_yield": 3.0, "market_cap": 1e12,
-                    "52w_high": 1200.0, "52w_low": 800.0}
+            return _make_stock_record(code)
 
-        with patch("fetcher.os.path.exists", return_value=False), \
+        with patch("fetcher.db.init_db"), \
+             patch("fetcher.db.load_latest_stocks", return_value=pd.DataFrame()), \
+             patch("fetcher.db.upsert_stocks"), \
              patch("fetcher.get_stock_info", side_effect=mock_get_info), \
-             patch("builtins.open", MagicMock()), \
-             patch("fetcher.pickle.dump"), \
              patch("fetcher.time.sleep"):
             result = get_all_stocks(["7203", "9999"], sleep_sec=0)
-
         assert "9999" not in result["code"].values
 
     def test_returns_empty_df_when_all_fail(self):
-        with patch("fetcher.os.path.exists", return_value=False), \
+        with patch("fetcher.db.init_db"), \
+             patch("fetcher.db.load_latest_stocks", return_value=pd.DataFrame()), \
              patch("fetcher.get_stock_info", return_value=None), \
              patch("fetcher.time.sleep"):
             result = get_all_stocks(["9999"], sleep_sec=0)
         assert result.empty
 
-    def test_uses_cache_when_available(self):
-        cached_df = pd.DataFrame([{"code": "7203", "name": "キャッシュ株"}])
-        with patch("fetcher.os.path.exists", return_value=True), \
-             patch("fetcher.pickle.load", return_value=cached_df), \
-             patch("builtins.open", MagicMock()):
-            result = get_all_stocks(["7203"])
-        assert result.iloc[0]["name"] == "キャッシュ株"
+    def test_saves_to_db_after_yfinance_fetch(self):
+        with patch("fetcher.db.init_db"), \
+             patch("fetcher.db.load_latest_stocks", return_value=pd.DataFrame()), \
+             patch("fetcher.db.upsert_stocks") as mock_upsert, \
+             patch("fetcher.get_stock_info", side_effect=_make_stock_record), \
+             patch("fetcher.time.sleep"):
+            get_all_stocks(["7203"], sleep_sec=0)
+        mock_upsert.assert_called_once()
 
     def test_calls_progress_callback(self):
         calls = []
 
-        def mock_get_info(code):
-            return {"code": code, "name": f"株{code}", "sector": "製造業",
-                    "price": 1000.0, "per": 12.0, "pbr": 1.0,
-                    "dividend_yield": 3.0, "market_cap": 1e12,
-                    "52w_high": 1200.0, "52w_low": 800.0}
-
-        with patch("fetcher.os.path.exists", return_value=False), \
-             patch("fetcher.get_stock_info", side_effect=mock_get_info), \
-             patch("builtins.open", MagicMock()), \
-             patch("fetcher.pickle.dump"), \
+        with patch("fetcher.db.init_db"), \
+             patch("fetcher.db.load_latest_stocks", return_value=pd.DataFrame()), \
+             patch("fetcher.db.upsert_stocks"), \
+             patch("fetcher.get_stock_info", side_effect=_make_stock_record), \
              patch("fetcher.time.sleep"):
-            get_all_stocks(["7203", "9984"], sleep_sec=0, progress_callback=lambda c, t, code: calls.append(c))
-
+            get_all_stocks(
+                ["7203", "9984"], sleep_sec=0,
+                progress_callback=lambda c, t, code: calls.append(c),
+            )
         assert calls == [1, 2]

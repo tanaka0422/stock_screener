@@ -6,27 +6,25 @@ signal_filter.py
 【フロー】
   スクリーニング済み DataFrame（PER/PBR/配当条件通過済み）
     └─ find_recent_gc_stocks()
+         ├─ SQLite の gc_signals に今日のキャッシュがあれば即返す
          ├─ 各銘柄の価格履歴を取得（3ヶ月分）
          ├─ calculate_technical_indicators() でGC判定
          ├─ GC発生日が cutoff 日以降かチェック
-         └─ 結果をキャッシュ（当日 + 銘柄リストのハッシュ）
+         └─ 結果を SQLite（gc_signals）に保存
 
 【設計思想】
 - ファンダメンタル条件で絞り込んだ後に呼び出す想定（対象銘柄を最小化）
 - fetcher / screener には依存するが app.py には依存しない
 """
 
-import os
-import pickle
 from datetime import date, timedelta
 from typing import Callable, Optional
 
 import pandas as pd
 
-from fetcher import get_price_history, CACHE_DIR
+import db
+from fetcher import get_price_history
 from screener import calculate_technical_indicators
-
-GC_CACHE_FILE = os.path.join(CACHE_DIR, "gc_{date}_{key}.pkl")
 
 
 def find_recent_gc_stocks(
@@ -54,16 +52,15 @@ def find_recent_gc_stocks(
     if screened_df.empty:
         return pd.DataFrame()
 
+    db.init_db()
+
+    cached_signals = db.load_gc_signals()
+    if cached_signals is not None:
+        merged = screened_df.merge(cached_signals, on="code", how="inner")
+        return merged.sort_values("gc_days_ago").reset_index(drop=True)
+
     today = date.today()
     cutoff = today - timedelta(days=days)
-
-    key = str(hash(frozenset(screened_df["code"].tolist())))[:8]
-    cache_path = GC_CACHE_FILE.format(date=str(today), key=key)
-    os.makedirs(CACHE_DIR, exist_ok=True)
-
-    if os.path.exists(cache_path):
-        with open(cache_path, "rb") as f:
-            return pickle.load(f)
 
     records = []
     total = len(screened_df)
@@ -91,9 +88,9 @@ def find_recent_gc_stocks(
                 "gc_days_ago": (today - latest_gc_date).days,
             })
 
-    result = pd.DataFrame(records).sort_values("gc_days_ago") if records else pd.DataFrame()
+    if not records:
+        return pd.DataFrame()
 
-    with open(cache_path, "wb") as f:
-        pickle.dump(result, f)
-
+    result = pd.DataFrame(records).sort_values("gc_days_ago").reset_index(drop=True)
+    db.upsert_gc_signals(result)
     return result

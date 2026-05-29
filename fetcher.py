@@ -27,12 +27,13 @@ from typing import Optional
 import yfinance as yf
 import pandas as pd
 
+import db
+
 # -------------------------------------------------------
-# キャッシュ設定
+# キャッシュ設定（JPX銘柄一覧のみ pickle を継続使用）
 # -------------------------------------------------------
 CACHE_DIR      = ".cache"
-JPX_CACHE_FILE = os.path.join(CACHE_DIR, "jpx_prime_{date}.pkl")   # 銘柄一覧（日次）
-STOCK_CACHE_FILE = os.path.join(CACHE_DIR, "stocks_{date}_{key}.pkl")  # 株価情報（日次）
+JPX_CACHE_FILE = os.path.join(CACHE_DIR, "jpx_prime_{date}.pkl")
 
 # JPX 上場銘柄一覧 Excel URL
 JPX_LIST_URL = (
@@ -182,16 +183,25 @@ def get_price_history(code: str, period: str = "6mo", interval: str = "1d") -> O
     """
     株価の時系列データを取得（移動平均・ゴールデンクロス計算に使用）。
 
+    SQLite にデータがあれば即返す。なければ yfinance から取得して保存する。
+
     Parameters
     ----------
     period   : '1mo' / '3mo' / '6mo' / '1y' / '2y' など
     interval : '1d'（日足）/ '1wk'（週足）/ '1mo'（月足）
     """
+    cached = db.load_price_history(code)
+    if cached is not None:
+        return cached
+
     ticker_symbol = _to_jp_ticker(code)
     try:
         ticker = yf.Ticker(ticker_symbol)
         df = ticker.history(period=period, interval=interval)
-        return df if not df.empty else None
+        if df.empty:
+            return None
+        db.upsert_price_history(code, df)
+        return df
     except Exception as e:
         print(f"[WARN] {code} の株価履歴取得失敗: {e}")
         return None
@@ -205,27 +215,23 @@ def get_all_stocks(
     """
     複数銘柄の基本情報をまとめて取得し DataFrame で返す。
 
+    SQLite に今日付きのデータがあれば即返す（cronバッチ取得済みの場合）。
+    なければ yfinance から取得して SQLite に保存する。
+
     Parameters
     ----------
     tickers           : 証券コードのリスト
     sleep_sec         : API連続アクセスへの配慮（デフォルト 0.4 秒）
     progress_callback : (current, total, code) を受け取る関数（Streamlit進捗表示用）
-
-    キャッシュ
-    ----------
-    当日 + 同一銘柄リストの組み合わせでキャッシュ保存。
-    銘柄リストが変わればキャッシュも別ファイルになる。
     """
-    today   = str(date.today())
-    # 銘柄リストのハッシュでキャッシュキーを生成（順序非依存）
-    key     = str(hash(frozenset(tickers)))[:8]
-    cache_path = STOCK_CACHE_FILE.format(date=today, key=key)
-    os.makedirs(CACHE_DIR, exist_ok=True)
-
-    if os.path.exists(cache_path):
-        print("[INFO] キャッシュから株価データを読み込み中...")
-        with open(cache_path, "rb") as f:
-            return pickle.load(f)
+    db.init_db()
+    latest = db.load_latest_stocks()
+    if not latest.empty:
+        ticker_set = set(tickers)
+        subset = latest[latest["code"].isin(ticker_set)]
+        if not subset.empty:
+            print("[INFO] SQLiteから株価データを読み込み中...")
+            return subset.reset_index(drop=True)
 
     records = []
     total   = len(tickers)
@@ -241,8 +247,5 @@ def get_all_stocks(
         return pd.DataFrame()
 
     df = pd.DataFrame(records)
-
-    with open(cache_path, "wb") as f:
-        pickle.dump(df, f)
-
+    db.upsert_stocks(df)
     return df
