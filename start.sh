@@ -3,6 +3,9 @@
 # Termux 起動時に cron と Streamlit を自動起動するスクリプト。
 # このスクリプト自身の場所を基準に動くので、どこに置いても動く。
 
+# SSHD Execute
+/usr/sbin/sshd
+
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
 # ログディレクトリ作成
@@ -13,11 +16,13 @@ service cron start 2>/dev/null || true
 
 # Streamlit をバックグラウンドで起動
 cd "$SCRIPT_DIR"
-source "$SCRIPT_DIR/venv/bin/activate"
+. "$SCRIPT_DIR/venv/bin/activate"
 
 nohup streamlit run app.py \
   --server.address 0.0.0.0 \
   --server.port 8501 \
+  --server.sslCertFile "$SCRIPT_DIR/certs/cert.pem" \
+  --server.sslKeyFile "$SCRIPT_DIR/certs/key.pem" \
   --server.headless true \
   > "$SCRIPT_DIR/logs/streamlit.log" 2>&1 &
 
