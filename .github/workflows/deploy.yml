@@ -23,6 +23,7 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+	  port: 8022
           script: |
             cd /root/stock_screener
             git pull origin master
