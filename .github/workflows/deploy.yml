@@ -28,5 +28,6 @@ jobs:
             cd /home/tanaka/stock_screener
             git pull origin master
             nohup bash /home/tanaka/stock_screener/deploy.sh > /tmp/deploy.log 2>&1
-            echo "deploy kicked"
+            sleep 2
+            exit 0
 
