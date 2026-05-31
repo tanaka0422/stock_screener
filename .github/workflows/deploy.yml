@@ -24,7 +24,7 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 8022
           script: |
-            cd /root/stock_screener
+            cd /home/tanaka/stock_screener
             git pull origin master
             . venv/bin/activate
             pip install -r requirements.txt
@@ -32,7 +32,7 @@ jobs:
             nohup streamlit run app.py \
               --server.address 0.0.0.0 \
               --server.port 8501 \
-              --server.sslCertFile /root/stock_screener/certs/cert.pem \
-              --server.sslKeyFile /root/stock_screener/certs/key.pem \
+              --server.sslCertFile /home/tanaka/stock_screener/certs/cert.pem \
+              --server.sslKeyFile /home/tanaka/stock_screener/certs/key.pem \
               --server.headless true \
               > logs/streamlit.log 2>&1 &
