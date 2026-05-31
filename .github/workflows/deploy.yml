@@ -27,16 +27,6 @@ jobs:
           script: |
             cd /home/tanaka/stock_screener
             git pull origin master
-            nohup bash -c '
-              . venv/bin/activate
-              pip install -r requirements.txt
-              pkill -f streamlit || true
-              nohup streamlit run app.py \
-                --server.address 0.0.0.0 \
-                --server.port 8501 \
-                --server.sslCertFile /home/tanaka/stock_screener/certs/cert.pem \
-                --server.sslKeyFile /home/tanaka/stock_screener/certs/key.pem \
-                --server.headless true \
-                > logs/streamlit.log 2>&1 &
-            ' > /tmp/deploy.log 2>&1
+            nohup bash /home/tanaka/stock_screener/deploy.sh > /tmp/deploy.log 2>&1
+            echo "deploy kicked"
 
