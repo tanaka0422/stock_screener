@@ -37,5 +37,5 @@ jobs:
                 --server.sslKeyFile /home/tanaka/stock_screener/certs/key.pem \
                 --server.headless true \
                 > logs/streamlit.log 2>&1 &
-              > /tmp/deploy.log 2>&1
+            ' > /tmp/deploy.log 2>&1
 
