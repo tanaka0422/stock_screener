@@ -23,6 +23,7 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 8022
+          command_timeout: 300s
           script: |
             cd /home/tanaka/stock_screener
             git pull origin master
