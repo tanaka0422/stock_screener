@@ -15,3 +15,4 @@ nohup streamlit run app.py \
   --server.sslKeyFile /home/tanaka/stock_screener/certs/key.pem \
   --server.headless true \
 
+exit 0
